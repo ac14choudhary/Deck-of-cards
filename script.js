@@ -6,9 +6,8 @@
 // Scene Constants
 const CARD_WIDTH = 2.5;
 const CARD_HEIGHT = 3.5;
-const CARD_THICKNESS = 0.01; // Reduced from 0.05
-const CARD_RADIUS = 0.1;
-const STACK_SPACING = 0.015; // Adjusted spacing for thinner cards
+const CARD_THICKNESS = 0.006;
+const STACK_SPACING = 0.008;
 const TOTAL_CARDS = 52;
 
 // Initialize Scene
@@ -140,8 +139,29 @@ const suits = ['♠', '♥', '♦', '♣'];
 const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const cards = [];
 
-// Shared materials for efficiency (though unique textures prevent full sharing)
-const backTexture = createCardTexture(null, null, false);
+// Shared materials for efficiency
+const textureLoader = new THREE.TextureLoader();
+const loadingManager = new THREE.LoadingManager();
+
+loadingManager.onStart = (url, itemsLoaded, itemsTotal) => {
+    console.log('Started loading file: ' + url + '.\nLoaded ' + itemsLoaded + ' of ' + itemsTotal + ' files.');
+};
+
+loadingManager.onLoad = () => {
+    console.log('Loading complete!');
+};
+
+loadingManager.onError = (url) => {
+    console.error('There was an error loading ' + url);
+};
+
+const backTexture = textureLoader.load('assets/card_back.jpg', (tex) => {
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    // Use sRGBEncoding for better color accuracy (r128 compatible)
+    tex.encoding = THREE.sRGBEncoding;
+    console.log('Card back texture loaded successfully');
+});
+
 const edgeMaterial = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.2 });
 
 function createCard(rank, suit, index) {
@@ -154,16 +174,21 @@ function createCard(rank, suit, index) {
         edgeMaterial, // top
         edgeMaterial, // bottom
         new THREE.MeshStandardMaterial({ map: frontTexture, roughness: 0.3 }), // front
-        new THREE.MeshStandardMaterial({ map: backTexture, roughness: 0.3 })   // back
+        new THREE.MeshStandardMaterial({
+            map: backTexture,
+            color: 0x222222, // Fallback dark grey color
+            roughness: 0.3
+        })   // back
     ];
 
     const card = new THREE.Mesh(geometry, materials);
     card.castShadow = true;
     card.receiveShadow = true;
 
-    // Initial position in stack
-    card.position.y = index * STACK_SPACING;
     card.rotation.x = -Math.PI / 2; // Flat on the table
+
+    // Store identity for shuffling
+    card.userData = { rank, suit };
 
     return card;
 }
@@ -174,13 +199,31 @@ suits.forEach(suit => {
     ranks.forEach(rank => {
         const card = createCard(rank, suit, currentIdx);
         cards.push(card);
-        deckGroup.add(card);
         currentIdx++;
     });
 });
 
-// Center the deck height
-deckGroup.position.y = -(TOTAL_CARDS * STACK_SPACING) / 2;
+// Shuffle Cards (Fisher-Yates)
+for (let i = cards.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cards[i], cards[j]] = [cards[j], cards[i]];
+}
+
+// Pin Ace of Spades to Top (last index)
+const aceOfSpadesIdx = cards.findIndex(c => c.userData.rank === 'A' && c.userData.suit === '♠');
+if (aceOfSpadesIdx !== -1) {
+    const aceOfSpades = cards.splice(aceOfSpadesIdx, 1)[0];
+    cards.push(aceOfSpades);
+}
+
+// Add shuffled cards to scene and set final stack positions
+cards.forEach((card, i) => {
+    card.position.y = i * STACK_SPACING;
+    deckGroup.add(card);
+});
+
+// Center the deck height slightly above floor
+deckGroup.position.y = 0.05;
 
 // Floor
 const floorGeo = new THREE.PlaneGeometry(50, 50);
@@ -205,18 +248,37 @@ gsap.from(camera.position, {
     x: 20,
     y: 20,
     z: 30,
-    duration: 2.5,
-    ease: "power3.out"
+    duration: 3,
+    ease: "power3.inOut"
 });
 
 cards.forEach((card, i) => {
-    gsap.from(card.position, {
-        y: card.position.y + 10,
-        opacity: 0,
-        duration: 1.5,
-        delay: i * 0.02,
-        ease: "bounce.out"
+    // Linear approach: Start directly above final position
+    const finalY = card.position.y;
+
+    // Set initial state: Straight above, no extra rotation
+    card.position.y = finalY + 15;
+
+    // Ensure card materials are ready for opacity animation if not already
+    card.material.forEach(m => {
+        m.transparent = true;
+        m.opacity = 0;
     });
+
+    // Simple Linear vertical drop timeline
+    const tl = gsap.timeline({ delay: i * 0.05 });
+
+    tl.to(card.position, {
+        y: finalY,
+        duration: 0.8,
+        ease: "power2.in"
+    });
+
+    // Fade in
+    tl.to(card.material, {
+        opacity: 1,
+        duration: 0.4,
+    }, 0);
 });
 
 // Raycaster for interaction
