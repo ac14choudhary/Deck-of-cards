@@ -286,11 +286,14 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 // Interaction Variables
-const levitatingCards = new Set();
+const handCards = []; // Array of cards currently in the "hand"
 let focusedCard = null;
 let isRotatingCard = false;
 let previousMouseX = 0;
 let previousMouseY = 0;
+
+const HAND_SPACING = 3.2; // Spacing between cards in the hand
+const HAND_Y = 8; // Height of cards in the hand
 
 // Orbit Controls Events for Mode Management
 controls.addEventListener('start', () => {
@@ -312,19 +315,25 @@ renderer.domElement.addEventListener('pointerdown', (event) => {
     if (intersects.length > 0) {
         const selectedObject = intersects[0].object;
 
-        // If we click the CURRENTLY focused card, we rotate it
-        if (focusedCard === selectedObject) {
-            isRotatingCard = true;
-            previousMouseX = event.clientX;
-            previousMouseY = event.clientY;
-            gsap.killTweensOf(focusedCard.rotation);
+        // Check if its already in the hand
+        const handIndex = handCards.indexOf(selectedObject);
+
+        if (handIndex !== -1) {
+            // If already in hand, focus it or start rotating if already focused
+            if (focusedCard === selectedObject) {
+                isRotatingCard = true;
+                previousMouseX = event.clientX;
+                previousMouseY = event.clientY;
+                gsap.killTweensOf(focusedCard.rotation);
+            } else {
+                switchFocus(selectedObject);
+            }
         } else if (!selectedObject.userData.isRising) {
-            // If we click a DIFFERENT card that isn't already rising, switch focus to it
-            riseCard(selectedObject);
+            // New card from deck
+            addCardToHand(selectedObject);
         }
     } else if (focusedCard) {
-        // Clicking the background when a card is focused still lets you rotate it?
-        // Let's allow rotation by dragging anywhere if focused, as requested
+        // Dragging background rotates focused card
         isRotatingCard = true;
         previousMouseX = event.clientX;
         previousMouseY = event.clientY;
@@ -346,6 +355,20 @@ window.addEventListener('pointermove', (event) => {
     previousMouseY = event.clientY;
 });
 
+// Cursor Hover Effect
+renderer.domElement.addEventListener('pointermove', (event) => {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObjects(cards);
+    if (intersects.length > 0) {
+        document.body.style.cursor = 'pointer';
+    } else {
+        document.body.style.cursor = 'default';
+    }
+});
+
 window.addEventListener('pointerup', () => {
     if (isRotatingCard) {
         isRotatingCard = false;
@@ -353,14 +376,19 @@ window.addEventListener('pointerup', () => {
     }
 });
 
-// Press Escape to re-enable camera
+// Press Escape to re-enable camera and clear hand
 window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+        handCards.length = 0;
         focusedCard = null;
         controls.enabled = true;
-        // Return camera and controls target to center
+
+        // Reset camera
         gsap.to(controls.target, { x: 0, y: 0, z: 0, duration: 1.5, ease: "power2.inOut" });
         gsap.to(camera.position, { x: 8, y: 8, z: 12, duration: 1.5, ease: "power2.inOut" });
+
+        // Optionally return cards to deck? 
+        // For now, let's just let them stay or reset their states if we wanted to fully clear.
     }
 });
 
@@ -395,66 +423,107 @@ window.addEventListener('wheel', (event) => {
     camera.position.z = newZ;
 });
 
-function riseCard(card) {
+function addCardToHand(card) {
+    if (handCards.includes(card)) return;
+
+    handCards.push(card);
+    card.userData.isRising = true;
     focusedCard = card;
-    controls.enabled = false; // Freeze the camera immediately
+    controls.enabled = false;
 
-    // Calculate target position: much higher and more centered over the deck
-    const targetY = 8; // Increased height
-    const targetX = (Math.random() - 0.5) * 1.5; // More centered
-    const targetZ = (Math.random() - 0.5) * 1.5; // More centered
+    // Initialize base coordinates to current physical position
+    // This provides a seamless handover to the bobbing logic
+    card.userData.baseX = card.position.x;
+    card.userData.baseY = card.position.y;
+    card.userData.baseZ = card.position.z;
 
-    // Sequence: Lift up, rotate to face camera, then start floating
-    const tl = gsap.timeline({
-        onComplete: () => {
-            // Only start floating logic AFTER the animation is done
-            levitatingCards.add(card);
-            card.userData.floatOffset = Math.random() * Math.PI * 2;
-            card.userData.floatSpeed = 0.5 + Math.random() * 0.5;
-            card.userData.baseY = targetY;
-            card.userData.isFloating = true;
-            card.userData.isRising = false; // Reset rising flag
+    const currentTime = clock.getElapsedTime();
+    const speed = 0.5 + Math.random() * 0.5;
+    card.userData.floatSpeed = speed;
+    // Set offset so sin starts at 0 right now relative to current baseY
+    card.userData.floatOffset = -(currentTime * speed);
+    card.userData.isFloating = true;
+
+    updateHandPositions();
+}
+
+const FOCUS_PADDING = 1.0; // Extra space around focused card
+const FOCUS_Z = 1.5;     // How much closer focused card comes
+
+function switchFocus(card) {
+    if (focusedCard === card) return;
+    focusedCard = card;
+    controls.enabled = false;
+
+    // Re-calculate positions to apply padding/depth
+    updateHandPositions();
+}
+
+function updateHandPositions() {
+    const totalHalfWidth = ((handCards.length - 1) * HAND_SPACING) / 2;
+    const focusIdx = handCards.indexOf(focusedCard);
+
+    handCards.forEach((card, index) => {
+        let targetX = (index * HAND_SPACING) - totalHalfWidth;
+        let targetZ = 0;
+
+        // Apply padding if there's a focused card
+        if (focusedCard && focusIdx !== -1) {
+            if (index < focusIdx) {
+                targetX -= FOCUS_PADDING;
+            } else if (index > focusIdx) {
+                targetX += FOCUS_PADDING;
+            } else {
+                // This is the focused card
+                targetZ = FOCUS_Z;
+            }
+        }
+
+        const targetY = HAND_Y;
+
+        // Kill existing BASE coordinate tweens and card rotation
+        gsap.killTweensOf(card.userData);
+        gsap.killTweensOf(card.rotation);
+
+        // Animate the BASE coordinates
+        gsap.to(card.userData, {
+            baseX: targetX,
+            baseY: targetY,
+            baseZ: targetZ,
+            duration: 1.2,
+            ease: "power3.out",
+            onComplete: () => {
+                card.userData.isRising = false;
+            }
+        });
+
+        gsap.to(card.rotation, {
+            x: 0,
+            y: 0,
+            z: 0,
+            duration: 1.0,
+            ease: "power2.out"
+        });
+
+        // If this is the focused card, sync camera to its moving BASE
+        if (card === focusedCard) {
+            gsap.to(controls.target, {
+                x: targetX,
+                y: targetY,
+                z: targetZ,
+                duration: 1.2,
+                ease: "power3.out"
+            });
+
+            gsap.to(camera.position, {
+                x: targetX,
+                y: targetY,
+                z: targetZ + 14,
+                duration: 1.2,
+                ease: "power3.out"
+            });
         }
     });
-
-    // Mark card as rising to prevent multiple triggers or float conflicts
-    card.userData.isRising = true;
-
-    // Animate card position
-    tl.to(card.position, {
-        x: targetX,
-        y: targetY,
-        z: targetZ,
-        duration: 1.5,
-        ease: "power3.out"
-    });
-
-    // Animate card rotation to face the camera perfectly
-    tl.to(card.rotation, {
-        x: 0, // front face (pos-z) will point towards pos-z
-        y: 0,
-        z: 0,
-        duration: 1,
-        ease: "back.out(1.7)"
-    }, "-=1.0");
-
-    // Focus camera on the rising card
-    tl.to(controls.target, {
-        x: targetX,
-        y: targetY,
-        z: targetZ,
-        duration: 1.5,
-        ease: "power3.inOut"
-    }, 0);
-
-    // Move camera to be PERPENDICULAR to the card face
-    tl.to(camera.position, {
-        x: targetX,
-        y: targetY,
-        z: targetZ + 14,
-        duration: 1.5,
-        ease: "power3.inOut"
-    }, 0);
 }
 
 // Resize handler
@@ -473,15 +542,23 @@ function animate() {
 
     controls.update();
 
-    // Animate levitating cards
-    levitatingCards.forEach(card => {
-        const offset = card.userData.floatOffset;
-        const speed = card.userData.floatSpeed;
-        const baseY = card.userData.baseY;
+    // Animate hand cards
+    handCards.forEach(card => {
+        const offset = card.userData.floatOffset || 0;
+        const speed = card.userData.floatSpeed || 0.5;
+        const baseY = card.userData.baseY !== undefined ? card.userData.baseY : card.position.y;
+        const baseX = card.userData.baseX !== undefined ? card.userData.baseX : card.position.x;
+        const baseZ = card.userData.baseZ !== undefined ? card.userData.baseZ : card.position.z;
 
-        // Subtle levitation
-        card.position.y = baseY + Math.sin(elapsedTime * speed + offset) * 0.3;
-        card.rotation.z += Math.cos(elapsedTime * 0.5) * 0.002;
+        // Always apply subtle levitation relative to the base (which might be moving!)
+        card.position.y = baseY + Math.sin(elapsedTime * speed + offset) * 0.2;
+        card.position.x = baseX + Math.cos(elapsedTime * speed * 0.5 + offset) * 0.1;
+        card.position.z = baseZ;
+
+        // Only apply automatic rotation bobbing if the user isn't manually rotating
+        if (!(isRotatingCard && card === focusedCard)) {
+            card.rotation.z = Math.cos(elapsedTime * 0.5 + offset) * 0.01;
+        }
     });
 
     renderer.render(scene, camera);
