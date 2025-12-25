@@ -165,20 +165,96 @@ const backTexture = textureLoader.load('assets/card_back.jpg', (tex) => {
 const edgeMaterial = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.2 });
 
 function createCard(rank, suit, index) {
-    const geometry = new THREE.BoxGeometry(CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS);
+    // NEW: Rounded Corner Geometry using Shape and ExtrudeGeometry
+    const shape = new THREE.Shape();
+    const w = CARD_WIDTH;
+    const h = CARD_HEIGHT;
+    const r = CARD_RADIUS;
+
+    // Drawing from 0,0 for easier UV calculation
+    shape.moveTo(r, 0);
+    shape.lineTo(w - r, 0);
+    shape.absarc(w - r, r, r, -Math.PI / 2, 0, false);
+    shape.lineTo(w, h - r);
+    shape.absarc(w - r, h - r, r, 0, Math.PI / 2, false);
+    shape.lineTo(r, h);
+    shape.absarc(r, h - r, r, Math.PI / 2, Math.PI, false);
+    shape.lineTo(0, r);
+    shape.absarc(r, r, r, Math.PI, Math.PI * 1.5, false);
+
+    const extrudeSettings = {
+        steps: 1,
+        depth: CARD_THICKNESS,
+        bevelEnabled: false,
+        curveSegments: 32 // Smoother corners
+    };
+
+    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+
+    // Center the geometry so rotation and positioning work as before
+    geometry.center();
+
+    // Fix UV mapping: ExtrudeGeometry lids use shape coordinates
+    // Since we drew from 0 to W and 0 to H, we scale them by 1/W and 1/H
+    const uvAttr = geometry.attributes.uv;
+    for (let i = 0; i < uvAttr.count; i++) {
+        // Only scale UVs for the lids (first two groups)
+        // Sides UVs are generated differently and usually okay
+        uvAttr.setXY(i, uvAttr.getX(i) / w, uvAttr.getY(i) / h);
+    }
+
+    // Split materials into Front Lid, Back Lid, and Sides
+    geometry.clearGroups();
+
+    // Calculate the exact number of indices for the lids
+    // ExtrudeGeometry generates 2 lids (front/back) using the same triangulation
+    // The triangulation is stored in the geometry, we can find the offset
+    const numVerticesPerCap = geometry.attributes.position.count / 2; // This is not quite right for sides
+
+    // Safer way: Three.js ExtrudeGeometry generates 2 groups by default in some versions,
+    // but in r128 it often puts lids first. 
+    // Let's use the vertex normal to distinguish front/back lids.
+    const normals = geometry.attributes.normal.array;
+    let frontIndices = [];
+    let backIndices = [];
+    let sideIndices = [];
+
+    const index = geometry.index.array;
+    for (let i = 0; i < index.length; i += 3) {
+        const a = index[i];
+        const b = index[i + 1];
+        const c = index[i + 2];
+
+        // Check normal of the first vertex of the triangle
+        const nz = normals[a * 3 + 2];
+
+        if (nz > 0.5) {
+            frontIndices.push(a, b, c);
+        } else if (nz < -0.5) {
+            backIndices.push(a, b, c);
+        } else {
+            sideIndices.push(a, b, c);
+        }
+    }
+
+    // Rebuild index buffer with sorted indices
+    const newIndices = new Uint32Array([...frontIndices, ...backIndices, ...sideIndices]);
+    geometry.setIndex(new THREE.BufferAttribute(newIndices, 1));
+
+    geometry.addGroup(0, frontIndices.length, 0); // Front
+    geometry.addGroup(frontIndices.length, backIndices.length, 1); // Back
+    geometry.addGroup(frontIndices.length + backIndices.length, sideIndices.length, 2); // Sides
+
     const frontTexture = createCardTexture(rank, suit, true);
 
     const materials = [
-        edgeMaterial, // right
-        edgeMaterial, // left
-        edgeMaterial, // top
-        edgeMaterial, // bottom
-        new THREE.MeshStandardMaterial({ map: frontTexture, roughness: 0.3 }), // front
+        new THREE.MeshStandardMaterial({ map: frontTexture, roughness: 0.3 }), // 0: Front
         new THREE.MeshStandardMaterial({
             map: backTexture,
-            color: 0x222222, // Fallback dark grey color
+            color: 0x222222,
             roughness: 0.3
-        })   // back
+        }), // 1: Back
+        edgeMaterial // 2: Edges
     ];
 
     const card = new THREE.Mesh(geometry, materials);
