@@ -238,11 +238,6 @@ floor.position.y = -0.1;
 floor.receiveShadow = true;
 scene.add(floor);
 
-// Grid Helper for premium feel
-const grid = new THREE.GridHelper(50, 50, 0x1e1e1e, 0x0a0a0a);
-grid.position.y = -0.05;
-scene.add(grid);
-
 // Entry Animation with GSAP
 gsap.from(camera.position, {
     x: 20,
@@ -426,7 +421,10 @@ window.addEventListener('wheel', (event) => {
 function addCardToHand(card) {
     if (handCards.includes(card)) return;
 
-    handCards.push(card);
+    // Insert new card in the middle of the hand array
+    const midIndex = Math.floor(handCards.length / 2);
+    handCards.splice(midIndex, 0, card);
+
     card.userData.isRising = true;
     focusedCard = card;
     controls.enabled = false;
@@ -455,7 +453,15 @@ function switchFocus(card) {
     focusedCard = card;
     controls.enabled = false;
 
-    // Re-calculate positions to apply padding/depth
+    // To make the selected card go "in the middle", we re-order the handCards array
+    const oldIndex = handCards.indexOf(card);
+    if (oldIndex !== -1) {
+        handCards.splice(oldIndex, 1);
+        const midIndex = Math.floor(handCards.length / 2);
+        handCards.splice(midIndex, 0, card);
+    }
+
+    // Re-calculate positions to apply padding/depth and the new centered order
     updateHandPositions();
 }
 
@@ -465,9 +471,10 @@ function updateHandPositions() {
 
     handCards.forEach((card, index) => {
         let targetX = (index * HAND_SPACING) - totalHalfWidth;
-        let targetZ = 0;
+        // Basic layering based on order in the hand
+        let targetZ = index * 0.05;
 
-        // Apply padding if there's a focused card
+        // Apply padding and extra depth if focused
         if (focusedCard && focusIdx !== -1) {
             if (index < focusIdx) {
                 targetX -= FOCUS_PADDING;
@@ -475,27 +482,49 @@ function updateHandPositions() {
                 targetX += FOCUS_PADDING;
             } else {
                 // This is the focused card
-                targetZ = FOCUS_Z;
+                targetZ += FOCUS_Z;
             }
         }
 
         const targetY = HAND_Y;
 
+        // COLLISION AVOIDANCE logic
+        const currentBaseX = card.userData.baseX || card.position.x;
+        const isTraveling = Math.abs(targetX - currentBaseX) > 0.5;
+
+        // Define temporary lanes for the glide
+        let moveZ = targetZ;
+        if (isTraveling) {
+            if (card === focusedCard) {
+                moveZ = targetZ + 1.2; // Glide over
+            } else {
+                moveZ = -1.5; // Glide under
+            }
+        }
+
         // Kill existing BASE coordinate tweens and card rotation
         gsap.killTweensOf(card.userData);
         gsap.killTweensOf(card.rotation);
 
-        // Animate the BASE coordinates
+        // Animate horizontal and vertical position
         gsap.to(card.userData, {
             baseX: targetX,
             baseY: targetY,
-            baseZ: targetZ,
             duration: 1.2,
             ease: "power3.out",
             onComplete: () => {
                 card.userData.isRising = false;
             }
         });
+
+        // Lane Logic: Pop out/dip back during horizontal travel, then settle
+        if (isTraveling) {
+            const tl = gsap.timeline();
+            tl.to(card.userData, { baseZ: moveZ, duration: 0.4, ease: "power2.out" });
+            tl.to(card.userData, { baseZ: targetZ, duration: 0.8, ease: "power2.inOut" });
+        } else {
+            gsap.to(card.userData, { baseZ: targetZ, duration: 1.2, ease: "power3.out" });
+        }
 
         gsap.to(card.rotation, {
             x: 0,
